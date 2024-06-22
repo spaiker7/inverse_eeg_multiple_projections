@@ -1,0 +1,36 @@
+subjects_dir: "./data/freesurfer"
+eeg_dir: "./data/EEG"
+trans_dir: "./data/trans"
+fwd_dir: "./data/fwd"
+morph_dir: "./data/morph"
+gen_dir: "./data/GEN/parc_schaefer200"
+
+subj_dict:
+  AR:
+    eeg_raw: "AR_eeg.fif"
+    trans: "Name1-eeg1005-trans.fif"
+    fs_name: "Name1"
+
+  NK:
+    eeg_raw: "NK_eeg.fif"
+    trans: "Name2-eeg1005-trans.fif"
+    fs_name: "Name2"
+
+  AB:
+    eeg_raw: "AB_eeg.fif"
+    trans: "Name3-eeg1005-trans.fif"
+    fs_name: "Name3"
+
+  ES:
+    eeg_raw: "ES_eeg.fif"
+    trans: "Name4-eeg1005-trans.fif"
+    fs_name: "Name4"
+
+sim_settings:
+  num_active_labels:  [20, 40] # from - to
+  eeg_snr: [10, 20] # from - to, dB
+  
+n_samples: 10000
+eeg_montage: "1005eeg-128"
+spacing_ico: 4
+parcellation: 'Schaefer2018_200Parcels_17Networks_order'
