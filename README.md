@@ -31,7 +31,7 @@ If you want to use pretrained Attention-Unet to predict activity from your own E
 ```python
 import torch
 from gen.project_and_interpolate import CorticalProjectionPreprocessor
-from models.model import AttentionUNet
+from model.models import AttentionUNet
 from plot import plot_projections
 
 projector = CorticalProjectionPreprocessor('subjects_config.yml')
@@ -50,5 +50,6 @@ plot_projections(predicted_activity)
 If you need to transforms projections back to source estimate, we prodive converter that generates masks of each dipole in each projection. The mean dipole magnitude calculated by the model predictions:
 
 ```python
+from gen.convert_stc import SourceEstimateConverter
 ```
 
