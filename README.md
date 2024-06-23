@@ -4,7 +4,11 @@ The repository provides synthetic generation and representation of neural activi
 For sensors, 5 hyperplanes are applied: left and right lateral, posterior, anterior, and superior. After being projected, the sensors' coordinates are downscaled to the chosen grid space (256x256) and linearly interpolated to create topographic maps.
 
 <img src="https://github.com/spaiker7/inverse_eeg_with_projections/assets/70488161/e2c96e11-db6d-48ce-9648-7935aa43032f" width=100% height=100%> 
-We trained Attention-Unet as a benchmark model on 4 different subjects' morphed anatomy (10.000 samples for each). 
+
+##
+Attention-Unet was trained as a benchmark model on 4 different subjects' morphed anatomy (10.000 samples for each) to predict activity in 7 cortical views. An example of validation sample:
+
+<img src="https://github.com/spaiker7/inverse_eeg_with_projections/assets/70488161/cd3af8ff-8c30-4b13-b329-5ca40dc3a9cf" width=100% height=100%> 
 
 ## Generate data
 To generate your own dataset, you need the following preprocessed MRI data from [freesurfer](https://surfer.nmr.mgh.harvard.edu/) for each subject:
