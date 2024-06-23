@@ -1,0 +1,17 @@
+run_name: "AttentionUNet ico4 parc_schaefer200 lbl_20-40"
+out_dir: "./runs/parc_schaefer200/"
+dataset_path: "./data/GEN/parc_schaefer200/topomaps_cortex-views_subj-4_ico4_lbl-20-40.h5"
+loss_mask: "./data/GEN/parc_schaefer200/loss_masks_fsaverage.npz"
+model: "AttentionUNet"
+batch_size: 12
+train_part: 0.95
+epochs: 50
+optimizer: "Adam"
+weight_decay: 0.0001
+loss_func: "MSELoss"
+checkpoint: ""
+make_predictions: "topomaps_cortex-views_subj-4_ico4_predicts"
+
+AttentionUNet:
+    in_channels: 5
+    out_channels: 7
