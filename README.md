@@ -26,7 +26,7 @@ _**compute_fwd_and_morph -> simulate -> project_and_interpolate**_
 
 
 ## Use pretrained model
-If you want to use pretrained Attention-Unet to predict activity from your own EEG, download the weights and follow the below code:
+If you want to use pre-trained Attention-Unet to predict activity from your own EEG or to fine-tune, download the [chkpt](https://drive.google.com/file/d/1LFGUG624DjpHa9DF9rvdqdCwZ0hXAtEd/view?usp=drive_link) here and follow the below code:
 
 ```python
 import torch
