@@ -1,7 +1,7 @@
 from pathlib import Path
 import yaml
 from tqdm import tqdm
-
+import h5py
 import mne
 import numpy as np
 
@@ -18,23 +18,27 @@ class Simulation:
 		eeg_snr:
 			SNR(dB) = 10 * log10 (A_signal / A_noise)
 			The desired average SNR of the electrodes
-
+		dip_range: (float, float) A*m, default: 10 - 100 nAm
+			The range of current dipoles magnitudes used to randomly pick constant activity of the region.
+			By default, scaled by 10^8.
 	'''
 	def __init__(
-			self, fwd, subjects_dir, 
-			parcellation, save_dir, settings
-			):
+			self, fwd, subj, subjects_dir, 
+			parcellation, dataset_path, settings,
+			dip_range=(10e-9, 100e-9)):
 		
 		self.settings = settings
 		self.subjects_dir = subjects_dir
-		self.save_dir = save_dir
+		self.dataset_path = dataset_path
+		self.dip_range = dip_range
 		
 		# fix the dipoles' orientations
 		if not fwd['surf_ori']:
 			self.fwd = mne.convert_forward_solution(fwd, surf_ori=True, force_fixed=True, 
 														use_cps=True, verbose=0)
 
-		self.subject = self.fwd['src'][0]['subject_his_id']
+		self.subject = self.fwd['src'][0]['subject_his_id'] # freesurfer name
+		self.subj = subj # short naming from config file
 
 		self.labels = mne.read_labels_from_annot(self.subject, parc=parcellation, hemi='both', surf_name='white', 
 												  subjects_dir=self.subjects_dir, sort=True,
@@ -53,35 +57,33 @@ class Simulation:
 		''' simulate sources and EEG data'''
 		self.n_samples = n_samples
 
-		n_labels = self.settings['num_active_labels']
-		n_labels_name = '-'.join(map(str, n_labels))
-		sim_type_name = f"Parcellation_{n_labels_name}-lbl"
+		file_eeg_name = "eeg-{}_snr-{}"
+		file_dip_name = "dip-{}_lbls-{}"
 
-		sensors_save_to = Path(self.save_dir) / sim_type_name / "sensors"
-		sensors_save_to.mkdir(parents=True, exist_ok=True)
+		with h5py.File(self.dataset_path, 'a') as out_file:
 
-		dipoles_save_to = Path(self.save_dir) / sim_type_name / "dipoles"
-		dipoles_save_to.mkdir(parents=True, exist_ok=True)
+			out_file.create_group(f"/sensors/{self.subj}")
+			out_file.create_group(f"/dipoles/{self.subj}")
 
-		file_eeg_name = "eeg-{}_snr-{}.npy"
-		file_dip_name = "dip-{}_lbls-{}.npy"
+			for i in tqdm(range(n_samples)):
 
-		for i in tqdm(range(n_samples)):
-			source_data, lbls = self.simulate_label_source(n_labels=n_labels)
-			eeg_data, snr = self.simulate_eeg(source_data, eeg_snr=self.settings['eeg_snr']) 
-			
-			fname_dip = Path(dipoles_save_to) / file_dip_name.format(i, lbls)
-			np.save(fname_dip, source_data)
-			
-			fname_eeg = Path(sensors_save_to) / file_eeg_name.format(i, snr)
-			np.save(fname_eeg, eeg_data)
+				dipoles_data, lbls = self.simulate_label_source(n_labels=n_labels)
+				eeg_data, snr = self.simulate_eeg(dipoles_data, eeg_snr=self.settings['eeg_snr']) 
 				
+				fname_dip = file_dip_name.format(i, lbls)
+				fname_eeg = file_eeg_name.format(i, snr)
+
+				out_file.create_dataset(f'sensors/{self.subj}/{fname_eeg}', data=eeg_data,
+											shape=eeg_data.shape, dtype=np.float16, compression="gzip")
+				out_file.create_dataset(f'dipoles/{self.subj}/{fname_dip}', data=dipoles_data,
+								shape=dipoles_data.shape, dtype=np.float16, compression="gzip")
+			
 
 
-	def simulate_eeg(self, source_data, eeg_snr, scale=1e-4):
+	def simulate_eeg(self, source_data, eeg_snr, scale=1e-5):
 
 		eeg = np.matmul(self.leadfield, source_data)*scale
-		
+
 		if eeg_snr:
 
 			snr = np.random.randint(*eeg_snr)
@@ -90,13 +92,18 @@ class Simulation:
 			A_noise = A_signal / (10**(snr/10))
 			noise = np.random.normal(0, A_noise, len(eeg))
 			noise = np.expand_dims(noise, axis=1)
-			eeg_noised = np.copy(eeg) + noise
+			eeg = np.copy(eeg) + noise
 
-			return eeg_noised, snr
-		else:
-			return eeg
+			# setting reference sensor to 0
+			if np.any(eeg < 0):
+				eeg += np.abs(np.min(eeg))
+			
+			eeg = np.array(eeg, dtype=np.float16)
 
-	def simulate_label_source(self, n_labels):
+			return eeg, snr
+
+
+	def simulate_label_source(self, n_labels, scale=1e10):
 		'''pick vertices in a label and randomly set current values'''
 
 
@@ -104,7 +111,7 @@ class Simulation:
 		label_list=[]
 
 		_, n_dipoles = self.leadfield.shape
-		data = np.zeros((n_dipoles,1))
+		data = np.zeros((n_dipoles,1), dtype=np.float16)
 
 		lbls = np.random.randint(n_labels[0], n_labels[1])
 		chosen_label_ids = np.random.randint(0, N_labels, lbls)
@@ -116,21 +123,19 @@ class Simulation:
 			# get indices to assign data[lbl_id]
 			hemi = lbl_cur.name.split("-")[-1]
 			if hemi=='rh':
-				n_dipoles_lh = self.dip_vertices[0].shape
+				n_dipoles_rh = self.dip_vertices[0].shape
 				v = lbl_cur.get_vertices_used(vertices=self.dip_vertices[1])
 				vert = self.dip_vertices[1]
 				v_stc_id = np.nonzero(np.in1d(vert, v))[0]
-				v_stc_id += n_dipoles_lh
+				v_stc_id += n_dipoles_rh
 			else:
 				vert = self.dip_vertices[0]
 				v = lbl_cur.get_vertices_used(vertices=self.dip_vertices[0])
 				v_stc_id = np.nonzero(np.in1d(vert, v))[0]
 
-			# generate the sources magnitudes as the gaussian distribution inside the label
-			mean = np.random.uniform(0.25, 0.97)
-			var_scale = np.random.uniform(0.005, 0.03)
-			current_values = np.random.normal(loc=mean, scale=var_scale, size=(len(v_stc_id),1))
-		   
+			# generate the sources magnitudes as the constant activity inside the label
+			fill_value = np.random.uniform(*(self.dip_range))*scale
+			current_values = np.full((len(v_stc_id),1), fill_value, dtype=np.float16)
 
 			data[v_stc_id,:] = current_values
 
@@ -146,8 +151,14 @@ if __name__ == "__main__":
 
 	if not Path(config["gen_dir"]).exists():
 		Path(config["gen_dir"]).mkdir(parents=True, exist_ok=True)
-		
-	for subject, sub_dict in config["subj_dict"].items():
+
+	save_dir = Path(config["gen_dir"])
+	n_labels = config['sim_settings']['num_active_labels']
+	n_labels_name = '-'.join(map(str, n_labels))
+	dataset_path = save_dir / \
+		f'sensors_dipoles_subj-{len(config["subj_dict"].keys())}_ico{config["spacing_ico"]}_lbl-{n_labels_name}.h5'
+	
+	for subj, sub_dict in config["subj_dict"].items():
 
 		# eeg info
 		eeg_path = Path(config["eeg_dir"]) / sub_dict["eeg_raw"]
@@ -163,7 +174,7 @@ if __name__ == "__main__":
 		print(f"trans_path: {trans_path}")
 
 		# fwd
-		fwd_fname = fwd_template.format(subj=subject,
+		fwd_fname = fwd_template.format(subj=subj,
 										eeg_montage=config["eeg_montage"],
 										spacing_ico=f'ico{config["spacing_ico"]}')
 		
@@ -171,13 +182,10 @@ if __name__ == "__main__":
 		fwd = mne.read_forward_solution(fwd_path)
 		print(f"fwd_path: {fwd_path}")
 		
-		print(f"\n{subject} files read")
-
-		# simulate data
-		save_dir = Path(config["gen_dir"]) / fwd_fname.replace(".fif","/")
+		print(f"\n{subj}-subject files read")
 	
-		sim = Simulation(fwd, config["subjects_dir"], config["parcellation"],
-									save_dir=save_dir, settings=config["sim_settings"])
+		sim = Simulation(fwd, subj, config["subjects_dir"], config["parcellation"],
+						dataset_path=dataset_path, settings=config["sim_settings"])
 		sim.simulate(n_samples=config["n_samples"])
 
 		print(f'\n {config["n_samples"]} eeg-dipoles paired samples generated to {save_dir}')
