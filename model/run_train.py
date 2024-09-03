@@ -10,7 +10,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import CosineAnnealingLR, ExponentialLR
 
-from models import AttentionUNet
+from model import UNetCBAM
 from utils import *
 
 seed = torch.Generator()
@@ -58,8 +58,8 @@ def main():
 
     print(f'Run name: {args_dict["run_name"]}\n ')
 
-    if args.model == 'AttentionUNet':
-        model = AttentionUNet(**config['AttentionUNet'])
+    if args.model == 'UNetCBAM':
+        model = UNetCBAM(**config['UNetCBAM'])
     else:
         raise NotImplementedError
     
@@ -68,18 +68,13 @@ def main():
 
     model = nn.DataParallel(model)
     model = model.to(device)
-
-    dataset = TopomapsToCortex(args_dict['dataset_path'])
-    train_part = round(len(dataset) * args_dict['train_part'])
- 
-    train_dataset, val_dataset = torch.utils.data.random_split(
-                                        dataset,
-                                        [train_part, len(dataset) - train_part],
-                                        generator=seed)
+    
+    train_dataset = TopomapsToCortex(args_dict['dataset_path'], subjects=args_dict['train_subjects'])
+    val_dataset = TopomapsToCortex(args_dict['dataset_path'], subjects=args_dict['val_subjects'])
 
     train_loader = DataLoader(train_dataset, batch_size=args_dict['batch_size'], shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=args_dict['batch_size'], shuffle=False)
-    print(f'\nDataset size: {len(dataset)}\nTrain: {len(train_dataset)}\nTest: {len(val_dataset)}')
+    print(f'\nDataset size: {len(train_dataset)+len(val_dataset)}\nTrain: {len(train_dataset)}\nTest: {len(val_dataset)}')
     print(f'\nInput tensor shape: {next(iter(train_loader))[0].shape} \nOutput tensor shape: {next(iter(train_loader))[1].shape} \n')
 
     if args_dict['optimizer'] in OPTIMIZERS:
@@ -97,8 +92,6 @@ def main():
     else:
         current_epoch = 0
 
-    # scheduler_cosine = CosineAnnealingLR(optimizer, args_dict["epochs"] - args_dict["warmup_epochs"], last_epoch=current_epoch-1)
-    # scheduler = LearningRateWarmup(optimizer, args_dict["warmup_epochs"], target_lr=lr, after_scheduler=scheduler_cosine)
     scheduler = ExponentialLR(optimizer, gamma=0.95, last_epoch=current_epoch-1)
 
     if args_dict['loss_func'] in LOSSES:
@@ -111,7 +104,7 @@ def main():
         mask = np.load(args_dict['loss_mask'])['arr_0']
     else:
         mask = 1
-    mask = torch.tensor(mask, dtype=torch.float32).to(device)
+    mask = torch.tensor(mask, dtype=torch.float16).to(device)
 
     outdir = Path(args_dict['out_dir'])
     chkpts_dir = outdir / 'chkpts'
