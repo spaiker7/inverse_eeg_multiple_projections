@@ -1,9 +1,11 @@
-run_name: "AttentionUNet ico4 parc_schaefer200 lbl_20-40"
+run_name: "train_AR-NK-ES_val-AB_parc_schaefer200"
 out_dir: "./runs/parc_schaefer200/"
-dataset_path: "./data/GEN/parc_schaefer200/topomaps_cortex-views_subj-4_ico4_lbl-20-40.h5"
+dataset_path: "./data/GEN/parc_schaefer200/topomaps_cortex-views_subj-4_ico4_lbl-1-25.h5"
 loss_mask: "./data/GEN/parc_schaefer200/loss_masks_fsaverage.npz"
-model: "AttentionUNet"
-batch_size: 12
+model: "UNetCBAM"
+train_subjects: ['AR', 'NK', 'ES']
+val_subjects: ['AB']
+batch_size: 32
 train_part: 0.95
 epochs: 50
 optimizer: "Adam"
@@ -12,6 +14,6 @@ loss_func: "MSELoss"
 checkpoint: ""
 make_predictions: "topomaps_cortex-views_subj-4_ico4_predicts"
 
-AttentionUNet:
+UNetCBAM:
     in_channels: 5
     out_channels: 7
