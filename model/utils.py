@@ -5,38 +5,37 @@ from tqdm import tqdm
 import wandb
 import numpy as np
 import torch
-from torch import nn
+from torch import nn, autocast
 from torch.utils.data import Dataset
+from torch.cuda.amp import GradScaler
+
 from ignite.metrics import SSIM
 
+    
 class TopomapsToCortex(Dataset):
-    def __init__(self, dataset_path):
+    def __init__(self, dataset_path, subjects):
         super(TopomapsToCortex, self).__init__()
         self.data = h5py.File(dataset_path, 'r')
-        self.filenames = list(self.data.keys())
 
-        self.snr_hashmap = np.zeros((len(self.filenames) // 2), dtype=int)
-        self.lbl_hashmap = np.zeros((len(self.filenames) // 2), dtype=int)
-        self.subj_hashmap = np.empty((len(self.filenames) // 2), dtype=object)
-
-        for filename in self.filenames:
-            if filename.startswith("cortex_views"):
-                i = int(filename.split("_")[2].split("-")[-1])
-                self.lbl_hashmap[i] = int(filename.split("_")[-2].split("-")[-1])
-                self.subj_hashmap[i] = filename.split("_")[-1].split("-")[-1]
-            else:
-                i = int(filename.split("_")[1].split("-")[-1])
-                self.snr_hashmap[i] = int(filename.split("_")[-2].split("-")[-1])
-
+        self.cortex_views_keys = []
+        self.topomaps_keys = []
+        for subject in subjects:
+            self.cortex_views_keys.extend(list(map(lambda x: f'{subject}/' + str(x), 
+                                                self.data['cortex-views'][subject].keys())))
+            self.topomaps_keys.extend(list(map(lambda x: f'{subject}/' + str(x), 
+                                    self.data['topomaps'][subject].keys())))
+            
     def __len__(self):
-        return len(self.filenames) // 2
+
+        return len(self.cortex_views_keys)
 
     def __getitem__(self, i):
-        topomaps_key = f'topomaps_eeg-{i}_snr-{self.snr_hashmap[i]}_subj-{self.subj_hashmap[i]}'
-        cortex_views_key = f'cortex_views_dip-{i}_lbls-{self.lbl_hashmap[i]}_subj-{self.subj_hashmap[i]}'
 
-        topomaps = np.array(self.data[topomaps_key])
-        cortex_views = np.array(self.data[cortex_views_key])
+        topomaps = np.array(self.data['topomaps'][self.topomaps_keys[i]])
+        cortex_views = np.array(self.data['cortex-views'][self.cortex_views_keys[i]])
+
+        topomaps = np.array(topomaps.copy(), dtype=np.float32)
+        cortex_views = np.array(cortex_views.copy(), dtype=np.float32)
 
         topomaps = torch.from_numpy(topomaps)
         cortex_views = torch.from_numpy(cortex_views)
@@ -91,42 +90,42 @@ def predict_val(make_predictions, out_dir, model, val_loader, device, loss_mask)
     num_batches=len(val_loader)
     with h5py.File(path.join(out_dir, f'{make_predictions}.h5'), 'w') as out_file:
         with torch.no_grad():
-            for batch_id, (X, y) in enumerate(val_loader):
-                X = X.float().to(device)
-                pred = model(X)
+            for batch_id, (topomaps, cortex_views) in enumerate(val_loader):
+                topomaps = topomaps.to(device)
+                val_output = model(topomaps)
 
-                X = torch.squeeze(X).cpu().numpy()
-                pred = torch.squeeze(pred*loss_mask).cpu().numpy()
-                y = torch.squeeze(y).cpu().numpy()
+                topomaps = torch.squeeze(topomaps).cpu().numpy()
+                val_output = torch.squeeze(val_output*loss_mask).cpu().numpy()
+                cortex_views = torch.squeeze(cortex_views).cpu().numpy()
 
-                out_file.create_dataset(f'val_input_{str(batch_id)}', data=X,
-                            shape=X.shape, dtype=np.float32)
-                out_file.create_dataset(f'val_output_{str(batch_id)}', data=pred,
-                            shape=pred.shape, dtype=np.float32)
-                out_file.create_dataset(f'val_true_{str(batch_id)}', data=y,
-                            shape=y.shape, dtype=np.float32)
+                out_file.create_dataset(f'val_input_{str(batch_id)}', data=topomaps,
+                            shape=topomaps.shape, dtype=np.float16)
+                out_file.create_dataset(f'val_output_{str(batch_id)}', data=val_output,
+                            shape=val_output.shape, dtype=np.float16)
+                out_file.create_dataset(f'val_true_{str(batch_id)}', data=cortex_views,
+                            shape=cortex_views.shape, dtype=np.float16)
                 
     print(f'\nMade {num_batches} batches predictions for val data.')
 
 
-def train_one_epoch(train_loader, model, optimizer, loss_func, device, loss_mask):
+def train_one_epoch(train_loader, model, optimizer, loss_func,
+                    grad_scaler, device, loss_mask):
     
     model.train(True)
 
     running_train_loss = 0
-    for image, label in train_loader:
+    for topomaps, cortex_views in train_loader:
 
-        image, label = image.to(device), label.to(device)
-        image = image.float()
-        label = label.float()
-
+        topomaps, cortex_views = topomaps.to(device), cortex_views.to(device)
         optimizer.zero_grad()
-        outputs = model(image)
-        
-        loss = loss_func((outputs*loss_mask), label)
 
-        loss.backward()
-        optimizer.step()
+        with autocast(device_type=device.type, dtype=torch.float16):
+            output = model(topomaps)
+            loss = loss_func((output*loss_mask), cortex_views)
+
+        grad_scaler.scale(loss).backward()
+        grad_scaler.step(optimizer)
+        grad_scaler.update()
 
         running_train_loss += loss.item()
 
@@ -140,30 +139,30 @@ def train(model, loss_func, train_loader, val_loader, optimizer, scheduler,
     metric = SSIM(data_range=1.0, device=device)
     early_stopper = EarlyStopper(patience=20, min_delta=0.00001)
 
+    grad_scaler = GradScaler()
+
     for epoch in tqdm(range(current_epoch, current_epoch+epochs)):
         
-        train_loss = train_one_epoch(train_loader, model, optimizer, loss_func, device, loss_mask)
+        train_loss = train_one_epoch(train_loader, model, optimizer, loss_func,
+                                     grad_scaler, device, loss_mask)
         
-        # scheduler.step(current_epoch+1)
         scheduler.step()
         metric.reset()
         model.train(False)
 
         running_val_loss = 0
         running_val_metric = 0
-        for image, label in val_loader:
+        for topomaps, cortex_views in val_loader:
 
-            image, label = image.to(device), label.to(device)
-            image = image.float()
-            label = label.float()
+            topomaps, cortex_views = topomaps.to(device), cortex_views.to(device)
 
             with torch.no_grad():
-                val_outputs = model(image)
+                val_output = model(topomaps)
 
-            loss = loss_func((val_outputs*loss_mask), label)
+            loss = loss_func((val_output*loss_mask), cortex_views)
             running_val_loss += loss.item()
 
-            metric.update((label, (val_outputs*loss_mask)))
+            metric.update((cortex_views, (val_output*loss_mask)))
             running_val_metric += metric.compute()
 
         val_loss = running_val_loss / len(val_loader)
@@ -186,4 +185,3 @@ def train(model, loss_func, train_loader, val_loader, optimizer, scheduler,
                 'optimizer_state_dict': optimizer.state_dict(),
                 }, checkpoint_path)
         
-
